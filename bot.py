@@ -441,6 +441,22 @@ bot_settings = {
     "demo_cooldown": 600, # NEW: Demo cooldown in seconds (10 minutes)
 }
 
+# NEW: Bonus adjustment system for weekly/monthly bonuses
+bonus_adjustments = {
+    "weekly": {
+        "adjustment_percent": 0.0,  # Percentage adjustment (-100 to +infinity)
+        "notify_users": False,  # Whether to notify users about adjustment
+        "last_adjustment_time": None,  # When was last adjustment made
+        "release_time": None,  # Next release time (Saturday 6pm UTC)
+    },
+    "monthly": {
+        "adjustment_percent": 0.0,
+        "notify_users": False,
+        "last_adjustment_time": None,
+        "release_time": None,  # Next release time (15th midnight UTC)
+    }
+}
+
 ## ===================================================================
 ## DASHBOARD IMAGE CONFIGURATION
 ## ===================================================================
@@ -16026,6 +16042,238 @@ async def post_init(application: Application):
     
     logging.info("Background tasks started successfully via post_init")
 # --- Main Function ---)
+# ===== BONUS ADJUSTMENT SYSTEM =====
+async def calculate_all_user_bonuses(bonus_type: str) -> dict:
+    """Calculate bonuses for all users. Returns dict with user_id: bonus_amount"""
+    bonuses = {}
+    now = datetime.now(timezone.utc)
+    
+    for user_id, stats in user_stats.items():
+        if bonus_type == "weekly":
+            weekly_stats = stats.get("weekly_stats", {"weighted_wager": 0.0, "net_loss": 0.0})
+            weighted_wager = weekly_stats.get("weighted_wager", 0.0)
+            net_loss = weekly_stats.get("net_loss", 0.0)
+        else:  # monthly
+            monthly_stats = stats.get("monthly_stats", {"weighted_wager": 0.0, "net_loss": 0.0})
+            weighted_wager = monthly_stats.get("weighted_wager", 0.0)
+            net_loss = monthly_stats.get("net_loss", 0.0)
+        
+        loss_component = max(0, net_loss) * 0.05
+        tier = get_user_tier(user_id)
+        vip_base = VIP_BASE_REWARDS.get(tier, 0.10)
+        bonus = vip_base + (weighted_wager * 1.0) + loss_component
+        
+        if bonus > 0:
+            # Apply username bonus
+            final_bonus = apply_username_bonus(bonus, user_id)
+            bonuses[user_id] = final_bonus
+    
+    return bonuses
+
+async def send_admin_bonus_notification(context: ContextTypes.DEFAULT_TYPE, bonus_type: str):
+    """Send admin notification 10 hours before bonus release with adjustment options"""
+    try:
+        bonuses = await calculate_all_user_bonuses(bonus_type)
+        total_bonus = sum(bonuses.values())
+        user_count = len(bonuses)
+        
+        if user_count == 0:
+            logging.info(f"No users eligible for {bonus_type} bonus")
+            return
+        
+        # Calculate release time
+        now = datetime.now(timezone.utc)
+        if bonus_type == "weekly":
+            # Find next Saturday 6pm
+            days_until_saturday = (5 - now.weekday()) % 7
+            if days_until_saturday == 0 and now.hour >= 18:
+                days_until_saturday = 7
+            release_time = (now + timedelta(days=days_until_saturday)).replace(hour=18, minute=0, second=0, microsecond=0)
+        else:  # monthly
+            # Find next 15th midnight
+            if now.day >= 15:
+                # Next month
+                if now.month == 12:
+                    release_time = now.replace(year=now.year + 1, month=1, day=15, hour=0, minute=0, second=0, microsecond=0)
+                else:
+                    release_time = now.replace(month=now.month + 1, day=15, hour=0, minute=0, second=0, microsecond=0)
+            else:
+                # This month
+                release_time = now.replace(day=15, hour=0, minute=0, second=0, microsecond=0)
+        
+        bonus_adjustments[bonus_type]["release_time"] = release_time.isoformat()
+        
+        message = (
+            f"🔔 <b>{bonus_type.title()} Bonus Notification</b>\n\n"
+            f"📊 <b>Summary:</b>\n"
+            f"• Total users eligible: {user_count}\n"
+            f"• Total bonus amount: ${total_bonus:.2f}\n"
+            f"• Average per user: ${total_bonus/user_count:.2f}\n\n"
+            f"⏰ Release time: {release_time.strftime('%Y-%m-%d %H:%M UTC')}\n"
+            f"(Users can claim in 10 hours)\n\n"
+            f"Use the buttons below to adjust bonuses:"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📈 Increase Bonus", callback_data=f"bonus_adjust_{bonus_type}_increase"),
+                InlineKeyboardButton("📉 Decrease Bonus", callback_data=f"bonus_adjust_{bonus_type}_decrease")
+            ],
+            [InlineKeyboardButton("✅ No Change", callback_data=f"bonus_adjust_{bonus_type}_nochange")]
+        ]
+        
+        await context.bot.send_message(
+            chat_id=BOT_OWNER_ID,
+            text=message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        logging.info(f"Admin notification sent for {bonus_type} bonus")
+        
+    except Exception as e:
+        logging.error(f"Error sending admin bonus notification: {e}")
+
+async def bonus_adjust_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle bonus adjustment button clicks"""
+    query = update.callback_query
+    
+    if query.from_user.id != BOT_OWNER_ID:
+        await query.answer("This is admin only!", show_alert=True)
+        return
+    
+    await query.answer()
+    
+    # Parse callback data: bonus_adjust_{type}_{action}
+    parts = query.data.split("_")
+    if len(parts) < 4:
+        return
+    
+    bonus_type = parts[2]  # weekly or monthly
+    action = parts[3]  # increase, decrease, nochange
+    
+    if action == "nochange":
+        await query.edit_message_text(
+            f"✅ No adjustment made to {bonus_type} bonus.\n"
+            f"Users can claim their bonuses as calculated.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    # Store action in context for next step
+    context.user_data['bonus_adjust_type'] = bonus_type
+    context.user_data['bonus_adjust_action'] = action
+    context.user_data['bonus_adjust_message_id'] = query.message.message_id
+    
+    await query.edit_message_text(
+        f"📊 <b>Adjust {bonus_type.title()} Bonus</b>\n\n"
+        f"Enter the percentage to {action} the bonus:\n"
+        f"• For example: <code>10</code> for 10%\n"
+        f"• For 50%: <code>50</code>\n\n"
+        f"Type the number below:",
+        parse_mode=ParseMode.HTML
+    )
+    
+    # Set up message handler for percentage input
+    context.user_data['awaiting_bonus_percentage'] = True
+
+async def bonus_percentage_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle percentage input for bonus adjustment"""
+    if not context.user_data.get('awaiting_bonus_percentage'):
+        return
+    
+    try:
+        percentage = float(update.message.text.strip())
+        if percentage < 0:
+            await update.message.reply_text("❌ Percentage must be positive. Please try again.")
+            return
+        
+        bonus_type = context.user_data.get('bonus_adjust_type')
+        action = context.user_data.get('bonus_adjust_action')
+        
+        # Apply adjustment
+        if action == "decrease":
+            percentage = -percentage
+        
+        bonus_adjustments[bonus_type]["adjustment_percent"] = percentage
+        bonus_adjustments[bonus_type]["last_adjustment_time"] = datetime.now(timezone.utc).isoformat()
+        
+        # Calculate new totals
+        bonuses = await calculate_all_user_bonuses(bonus_type)
+        total_before = sum(bonuses.values())
+        total_after = total_before * (1 + percentage / 100)
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Notify Users", callback_data=f"bonus_notify_{bonus_type}_yes"),
+                InlineKeyboardButton("❌ Don't Notify", callback_data=f"bonus_notify_{bonus_type}_no")
+            ]
+        ]
+        
+        await update.message.reply_text(
+            f"✅ <b>Bonus Adjustment Applied</b>\n\n"
+            f"📊 {bonus_type.title()} bonus {action}d by {abs(percentage):.1f}%\n\n"
+            f"<b>Impact:</b>\n"
+            f"• Before: ${total_before:.2f}\n"
+            f"• After: ${total_after:.2f}\n"
+            f"• Difference: ${total_after - total_before:.2f}\n\n"
+            f"Do you want to notify users about this adjustment when they claim?",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        # Clear state
+        context.user_data['awaiting_bonus_percentage'] = False
+        
+    except ValueError:
+        await update.message.reply_text("❌ Invalid number. Please enter a valid percentage.")
+
+async def bonus_notify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle notify users decision"""
+    query = update.callback_query
+    
+    if query.from_user.id != BOT_OWNER_ID:
+        await query.answer("This is admin only!", show_alert=True)
+        return
+    
+    await query.answer()
+    
+    # Parse callback data: bonus_notify_{type}_{decision}
+    parts = query.data.split("_")
+    if len(parts) < 4:
+        return
+    
+    bonus_type = parts[2]  # weekly or monthly
+    decision = parts[3]  # yes or no
+    
+    bonus_adjustments[bonus_type]["notify_users"] = (decision == "yes")
+    
+    notify_text = "will be notified" if decision == "yes" else "will NOT be notified"
+    
+    await query.edit_message_text(
+        f"✅ <b>Settings Updated</b>\n\n"
+        f"Users {notify_text} about the bonus adjustment when they claim their {bonus_type} bonus.\n\n"
+        f"Adjustment: {bonus_adjustments[bonus_type]['adjustment_percent']:.1f}%",
+        parse_mode=ParseMode.HTML
+    )
+
+async def check_and_send_bonus_notifications(context: ContextTypes.DEFAULT_TYPE):
+    """Check if it's time to send bonus notifications (called periodically)"""
+    now = datetime.now(timezone.utc)
+    
+    # Check weekly (Saturday 8am UTC = 10 hours before 6pm)
+    if now.weekday() == 5 and now.hour == 8 and now.minute < 30:  # Saturday 8am
+        # Check if we already sent notification recently
+        last_adj = bonus_adjustments["weekly"].get("last_adjustment_time")
+        if not last_adj or (now - datetime.fromisoformat(last_adj)).days >= 7:
+            await send_admin_bonus_notification(context, "weekly")
+    
+    # Check monthly (14th 2pm UTC = 10 hours before 15th midnight)
+    if now.day == 14 and now.hour == 14 and now.minute < 30:
+        last_adj = bonus_adjustments["monthly"].get("last_adjustment_time")
+        if not last_adj or (now - datetime.fromisoformat(last_adj)).days >= 28:
+            await send_admin_bonus_notification(context, "monthly")
+
 def main():
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO,
                         handlers=[logging.FileHandler(os.path.join(LOGS_DIR, f"bot_{datetime.now().strftime('%Y%m%d')}.log")), logging.StreamHandler()])
@@ -16339,6 +16587,11 @@ def main():
     app.add_handler(CallbackQueryHandler(active_all_navigation_callback, pattern=r"^activeall_"))
     app.add_handler(CallbackQueryHandler(withdrawal_cancel_callback, pattern=r"^withdrawal_cancel_")) # NEW - Withdrawal cancellation
     
+    # NEW: Bonus adjustment system handlers
+    app.add_handler(CallbackQueryHandler(bonus_adjust_callback, pattern=r"^bonus_adjust_"))
+    app.add_handler(CallbackQueryHandler(bonus_notify_callback, pattern=r"^bonus_notify_"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bonus_percentage_input))
+    
     # Provably Fair Callbacks (OLD SYSTEM - REMOVED, now using deep links to DM)
     # app.add_handler(CallbackQueryHandler(pf_rotate_seeds_callback, pattern=r"^pf_rotate_seeds$"))
     # app.add_handler(CallbackQueryHandler(pf_show_game_details_callback, pattern=r"^pf_show_"))
@@ -16417,6 +16670,10 @@ def main():
             if deal.get("status") == "accepted_awaiting_deposit":
                 logging.info(f"Recovered active escrow deal {deal_id}, restarting monitor.")
                 app.job_queue.run_repeating(monitor_escrow_deposit, interval=20, first=10, data={'deal_id': deal_id}, name=f"escrow_monitor_{deal_id}")
+        
+        # NEW: Schedule bonus notification checks (run every 30 minutes)
+        app.job_queue.run_repeating(check_and_send_bonus_notifications, interval=1800, first=60)
+        logging.info("Scheduled bonus notification checker")
         
         # ===== DEPOSIT SYSTEM BACKGROUND TASKS =====
         if deposit_system_active:
@@ -17121,8 +17378,12 @@ async def weekly_bonus_command(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         return
     
+    # Apply adjustment if set by admin
+    adjustment_percent = bonus_adjustments["weekly"]["adjustment_percent"]
+    adjusted_bonus = bonus * (1 + adjustment_percent / 100)
+    
     # Apply username bonus (5% extra if user has bot username in name)
-    final_bonus = apply_username_bonus(bonus, user.id)
+    final_bonus = apply_username_bonus(adjusted_bonus, user.id)
     has_bonus = check_username_bonus(user.id)
     
     user_wallets[user.id] += final_bonus
@@ -17133,7 +17394,15 @@ async def weekly_bonus_command(update: Update, context: ContextTypes.DEFAULT_TYP
     
     bonus_text = ""
     if has_bonus:
-        bonus_text = f"\n🎉 <b>Username Bonus:</b> +5% (${final_bonus - bonus:.2f})"
+        bonus_text = f"\n🎉 <b>Username Bonus:</b> +5% (${final_bonus - adjusted_bonus:.2f})"
+    
+    # Add adjustment notification if admin enabled it
+    adjustment_text = ""
+    if adjustment_percent != 0 and bonus_adjustments["weekly"]["notify_users"]:
+        if adjustment_percent > 0:
+            adjustment_text = f"\n\n🎁 <b>Special Bonus!</b> Admin increased all bonuses by {adjustment_percent:.1f}%!"
+        else:
+            adjustment_text = f"\n\n⚠️ Note: Bonuses were adjusted by {adjustment_percent:.1f}% this week."
     
     msg = (
         f"📅 <b>Weekly Bonus Claimed!</b>\n\n"
@@ -17142,6 +17411,7 @@ async def weekly_bonus_command(update: Update, context: ContextTypes.DEFAULT_TYP
         f"  VIP Base ({tier}): ${vip_base:.2f}\n"
         f"  Weighted Wager: ${weighted_wager:.4f}\n"
         f"  Net Loss Bonus: ${loss_component:.2f}"
+        + adjustment_text
         + get_username_bonus_guidance()
     )
     
@@ -17228,8 +17498,12 @@ async def monthly_bonus_command(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         return
     
+    # Apply adjustment if set by admin
+    adjustment_percent = bonus_adjustments["monthly"]["adjustment_percent"]
+    adjusted_bonus = bonus * (1 + adjustment_percent / 100)
+    
     # Apply username bonus (5% extra if user has bot username in name)
-    final_bonus = apply_username_bonus(bonus, user.id)
+    final_bonus = apply_username_bonus(adjusted_bonus, user.id)
     has_bonus = check_username_bonus(user.id)
     
     user_wallets[user.id] += final_bonus
@@ -17240,7 +17514,15 @@ async def monthly_bonus_command(update: Update, context: ContextTypes.DEFAULT_TY
     
     bonus_text = ""
     if has_bonus:
-        bonus_text = f"\n🎉 <b>Username Bonus:</b> +5% (${final_bonus - bonus:.2f})"
+        bonus_text = f"\n🎉 <b>Username Bonus:</b> +5% (${final_bonus - adjusted_bonus:.2f})"
+    
+    # Add adjustment notification if admin enabled it
+    adjustment_text = ""
+    if adjustment_percent != 0 and bonus_adjustments["monthly"]["notify_users"]:
+        if adjustment_percent > 0:
+            adjustment_text = f"\n\n🎁 <b>Special Bonus!</b> Admin increased all bonuses by {adjustment_percent:.1f}%!"
+        else:
+            adjustment_text = f"\n\n⚠️ Note: Bonuses were adjusted by {adjustment_percent:.1f}% this month."
     
     msg = (
         f"🗓️ <b>Monthly Bonus Claimed!</b>\n\n"
@@ -17249,6 +17531,7 @@ async def monthly_bonus_command(update: Update, context: ContextTypes.DEFAULT_TY
         f"  VIP Base ({tier}): ${vip_base:.2f}\n"
         f"  Weighted Wager: ${weighted_wager:.4f}\n"
         f"  Net Loss Bonus: ${loss_component:.2f}"
+        + adjustment_text
         + get_username_bonus_guidance()
     )
     
