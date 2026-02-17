@@ -11660,6 +11660,10 @@ async def mines_rebet_double_callback(update: Update, context: ContextTypes.DEFA
         await query.answer("Insufficient balance!", show_alert=True)
         return
     
+    # Deduct bet amount
+    user_wallets[user.id] -= bet_amount
+    save_user_data(user.id)
+    
     # Use user's provably fair seeds and increment nonce at game start
     seeds = get_user_seeds(user.id)
     current_nonce = seeds["nonce"]
