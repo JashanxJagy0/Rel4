@@ -386,6 +386,7 @@ os.makedirs(GIFT_CODE_DIR, exist_ok=True) # NEW
 
 # --- Helper Bot Initialization (for PvP Load Balancing) ---
 helper_bot = None
+helper_app = None  # NEW: Helper bot application for handling callbacks
 if HELPER_BOT_TOKEN:
     try:
         helper_bot = Bot(token=HELPER_BOT_TOKEN)
@@ -4681,9 +4682,9 @@ def check_username_bonus(user_id):
         return False
     stats = user_stats.get(user_id, {})
     first_name = stats.get("userinfo", {}).get("first_name", "")
-    username = stats.get("userinfo", {}).get("username", "")
-    tag = BOT_USERNAME_TAG.lower()
-    return tag in (first_name or "").lower() or tag in (username or "").lower()
+    tag = BOT_USERNAME_TAG.lower().replace("@", "")  # Remove @ if present in tag
+    # Check in first_name (this is where Telegram users set their display name)
+    return tag in (first_name or "").lower()
 
 def apply_username_bonus(amount, user_id):
     """Apply 5% extra bonus if user has bot username in their name."""
@@ -4694,7 +4695,8 @@ def apply_username_bonus(amount, user_id):
 def get_username_bonus_guidance():
     """Return guidance message for users to add bot username to their name."""
     if BOT_USERNAME_TAG:
-        return (f"\n\n💡 <b>Tip:</b> Add <code>{BOT_USERNAME_TAG}</code> to your Telegram name "
+        # Use proper mention/link format instead of plain code
+        return (f"\n\n💡 <b>Tip:</b> Add <a href='https://t.me/{BOT_USERNAME_TAG.replace('@', '')}'>{BOT_USERNAME_TAG}</a> to your Telegram name "
                 f"to get <b>5% extra</b> on all bonus claims (rakeback, weekly, monthly)!")
     return ""
 
@@ -5627,8 +5629,9 @@ async def game_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "• <code>/sl amount</code>\n"
             "• Example: <code>/sl 1</code> or <code>/sl all</code>\n\n"
             "<b>Payouts:</b>\n"
-            "• 3 matching BAR, LEMON, or GRAPE: 14x\n"
-            "• Triple 7s (JACKPOT): 28x",
+            "• 3 matching BAR, LEMON, or GRAPE: 10x\n"
+            "• Triple 7s (JACKPOT): 20x\n"
+            "• No match: 0x",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="games_category_house")]])
         )
@@ -8268,11 +8271,11 @@ async def slots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     win = False
     multiplier = 0
     win_type = ""
-    # FIX: Corrected slot machine logic based on Telegram API
+    # FIX: Updated slot machine logic with new multipliers
     if slot_value == 64: # 777
-        win, multiplier, win_type = True, 28, "🍀 JACKPOT - Triple 7s!"
+        win, multiplier, win_type = True, 20, "🍀 JACKPOT - Triple 7s!"
     elif slot_value in [1, 22, 43]: # bar, grape, lemon
-        win, multiplier, win_type = True, 14, "🎉 Triple Match!"
+        win, multiplier, win_type = True, 10, "🎉 Triple Match!"
 
     if win:
         winnings = bet_amount * multiplier
@@ -16423,9 +16426,59 @@ def main():
     else:
         logging.warning("Job queue not available.")
 
+    # ===== HELPER BOT APPLICATION SETUP =====
+    # Set up helper bot with callback handlers for group messages
+    if helper_bot and HELPER_BOT_TOKEN:
+        try:
+            global helper_app
+            helper_app = ApplicationBuilder().token(HELPER_BOT_TOKEN).build()
+            
+            # Register only callback handlers that helper bot needs for its messages
+            helper_app.add_handler(CallbackQueryHandler(leaderboard_callback, pattern=r"^leaderboard_(weekly|monthly|wins|alltime)_"))
+            helper_app.add_handler(CallbackQueryHandler(stats_view_callback, pattern=r"^stats_(24h|alltime)_"))
+            helper_app.add_handler(CallbackQueryHandler(price_update_callback, pattern=r"^price_update_"))
+            
+            logging.info("Helper bot application initialized with callback handlers")
+        except Exception as e:
+            logging.warning(f"Failed to initialize helper bot application: {e}")
+            helper_app = None
+
     print("Bot started successfully with all new features!")
     print("Press Ctrl+C to stop.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Run both main and helper bot applications concurrently
+    if helper_app:
+        async def run_bots():
+            """Run both main and helper bot applications concurrently"""
+            async with app:
+                await app.initialize()
+                await app.start()
+                await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+                
+                async with helper_app:
+                    await helper_app.initialize()
+                    await helper_app.start()
+                    await helper_app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+                    
+                    # Keep both running
+                    try:
+                        while True:
+                            await asyncio.sleep(1)
+                    except (KeyboardInterrupt, SystemExit):
+                        pass
+                    finally:
+                        await helper_app.updater.stop()
+                        await helper_app.stop()
+                        await helper_app.shutdown()
+                
+                await app.updater.stop()
+                await app.stop()
+                await app.shutdown()
+        
+        asyncio.run(run_bots())
+    else:
+        # Run only main bot if helper bot is not configured
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 ## NEW/IMPROVED CONVERSATION AND GAME FLOWS ##
 @check_banned
@@ -17006,7 +17059,7 @@ async def bonus_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
 @check_maintenance
 async def weekly_bonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callback=False):
     user = update.effective_user
-    await ensure_user_in_wallets(user.id, user.username, context=context)
+    await ensure_user_in_wallets(user.id, user.username, context=context, first_name=user.first_name)
     stats = user_stats[user.id]
     now = datetime.now(timezone.utc)
     
@@ -17102,7 +17155,7 @@ async def weekly_bonus_command(update: Update, context: ContextTypes.DEFAULT_TYP
 @check_maintenance
 async def monthly_bonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callback=False):
     user = update.effective_user
-    await ensure_user_in_wallets(user.id, user.username, context=context)
+    await ensure_user_in_wallets(user.id, user.username, context=context, first_name=user.first_name)
     stats = user_stats[user.id]
     now = datetime.now(timezone.utc)
     
@@ -17857,7 +17910,7 @@ async def pf_verify_cancel_callback(update: Update, context: ContextTypes.DEFAUL
 @check_maintenance
 async def rakeback_command(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callback=False):
     user = update.effective_user
-    await ensure_user_in_wallets(user.id, user.username, context=context)
+    await ensure_user_in_wallets(user.id, user.username, context=context, first_name=user.first_name)
     stats = user_stats[user.id]
     
     rakeback_balance = stats.get("rakeback_balance", 0.0)
