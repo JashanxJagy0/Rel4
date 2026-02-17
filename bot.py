@@ -86,6 +86,8 @@ HELPER_BOT_ANIMATION_DELAY = 0.3  # Seconds to wait after helper bot sends anima
 # --- Username Bonus Configuration ---
 # Users who add this tag/username in their Telegram name get 5% extra on all bonuses (rk, weekly, monthly)
 BOT_USERNAME_TAG = "@DiceNations"  # Fill in the tag/text users should add to their Telegram name (case-insensitive, e.g. "CasinoBot")
+# Preprocessed tag for efficient checking (remove @ and lowercase once)
+BOT_USERNAME_TAG_NORMALIZED = BOT_USERNAME_TAG.lower().replace("@", "") if BOT_USERNAME_TAG else ""
 
 # --- House Edge Configuration ---
 # Different house edges for different game categories
@@ -4694,13 +4696,12 @@ def update_stats_on_bet(user_id, game_id, amount, win, pvp_win=False, multiplier
 def check_username_bonus(user_id):
     """Check if a user has the bot username tag in their Telegram name.
     Returns True if the user gets the 5% extra bonus."""
-    if not BOT_USERNAME_TAG:
+    if not BOT_USERNAME_TAG_NORMALIZED:
         return False
     stats = user_stats.get(user_id, {})
     first_name = stats.get("userinfo", {}).get("first_name", "")
-    tag = BOT_USERNAME_TAG.lower().replace("@", "")  # Remove @ if present in tag
     # Check in first_name (this is where Telegram users set their display name)
-    return tag in (first_name or "").lower()
+    return BOT_USERNAME_TAG_NORMALIZED in (first_name or "").lower()
 
 def apply_username_bonus(amount, user_id):
     """Apply 5% extra bonus if user has bot username in their name."""
@@ -4712,7 +4713,8 @@ def get_username_bonus_guidance():
     """Return guidance message for users to add bot username to their name."""
     if BOT_USERNAME_TAG:
         # Use proper mention/link format instead of plain code
-        return (f"\n\n💡 <b>Tip:</b> Add <a href='https://t.me/{BOT_USERNAME_TAG.replace('@', '')}'>{BOT_USERNAME_TAG}</a> to your Telegram name "
+        tag_without_at = BOT_USERNAME_TAG.replace('@', '')
+        return (f"\n\n💡 <b>Tip:</b> Add <a href='https://t.me/{tag_without_at}'>{BOT_USERNAME_TAG}</a> to your Telegram name "
                 f"to get <b>5% extra</b> on all bonus claims (rakeback, weekly, monthly)!")
     return ""
 
@@ -16265,14 +16267,27 @@ async def check_and_send_bonus_notifications(context: ContextTypes.DEFAULT_TYPE)
     if now.weekday() == 5 and now.hour == 8 and now.minute < 30:  # Saturday 8am
         # Check if we already sent notification recently
         last_adj = bonus_adjustments["weekly"].get("last_adjustment_time")
-        if not last_adj or (now - datetime.fromisoformat(last_adj)).days >= 7:
-            await send_admin_bonus_notification(context, "weekly")
+        if last_adj and isinstance(last_adj, str):
+            try:
+                last_adj_dt = datetime.fromisoformat(last_adj)
+                if (now - last_adj_dt).days < 7:
+                    return  # Already notified this week
+            except (ValueError, TypeError):
+                pass  # Invalid format, proceed with notification
+        await send_admin_bonus_notification(context, "weekly")
     
     # Check monthly (14th 2pm UTC = 10 hours before 15th midnight)
     if now.day == 14 and now.hour == 14 and now.minute < 30:
         last_adj = bonus_adjustments["monthly"].get("last_adjustment_time")
-        if not last_adj or (now - datetime.fromisoformat(last_adj)).days >= 28:
-            await send_admin_bonus_notification(context, "monthly")
+        if last_adj and isinstance(last_adj, str):
+            try:
+                last_adj_dt = datetime.fromisoformat(last_adj)
+                # Check if it's been at least 25 days (to avoid duplicate notifications in same month)
+                if (now - last_adj_dt).days < 25:
+                    return
+            except (ValueError, TypeError):
+                pass
+        await send_admin_bonus_notification(context, "monthly")
 
 def main():
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO,
@@ -16687,7 +16702,6 @@ def main():
     # Set up helper bot with callback handlers for group messages
     if helper_bot and HELPER_BOT_TOKEN:
         try:
-            global helper_app
             helper_app = ApplicationBuilder().token(HELPER_BOT_TOKEN).build()
             
             # Register only callback handlers that helper bot needs for its messages
@@ -16717,10 +16731,10 @@ def main():
                     await helper_app.start()
                     await helper_app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
                     
-                    # Keep both running
+                    # Keep both running using an event
+                    stop_event = asyncio.Event()
                     try:
-                        while True:
-                            await asyncio.sleep(1)
+                        await stop_event.wait()  # Wait indefinitely until interrupted
                     except (KeyboardInterrupt, SystemExit):
                         pass
                     finally:
@@ -17394,7 +17408,9 @@ async def weekly_bonus_command(update: Update, context: ContextTypes.DEFAULT_TYP
     
     bonus_text = ""
     if has_bonus:
-        bonus_text = f"\n🎉 <b>Username Bonus:</b> +5% (${final_bonus - adjusted_bonus:.2f})"
+        # Show username bonus as 5% of the base bonus (not adjusted bonus)
+        username_bonus_amount = bonus * 0.05
+        bonus_text = f"\n🎉 <b>Username Bonus:</b> +5% (${username_bonus_amount:.2f})"
     
     # Add adjustment notification if admin enabled it
     adjustment_text = ""
@@ -17514,7 +17530,9 @@ async def monthly_bonus_command(update: Update, context: ContextTypes.DEFAULT_TY
     
     bonus_text = ""
     if has_bonus:
-        bonus_text = f"\n🎉 <b>Username Bonus:</b> +5% (${final_bonus - adjusted_bonus:.2f})"
+        # Show username bonus as 5% of the base bonus (not adjusted bonus)
+        username_bonus_amount = bonus * 0.05
+        bonus_text = f"\n🎉 <b>Username Bonus:</b> +5% (${username_bonus_amount:.2f})"
     
     # Add adjustment notification if admin enabled it
     adjustment_text = ""
