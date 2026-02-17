@@ -8318,11 +8318,131 @@ async def slots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_pnl(user.id)
     save_user_data(user.id)
     
-    # Create keyboard with provably fair button
-    keyboard = [[await create_provably_fair_button(game_id, context)]]
+    # Create keyboard with Rebet and Double buttons (NO provably fair for emoji-based slots)
+    keyboard = [
+        [
+            apply_button_style(InlineKeyboardButton("🔄 Rebet", callback_data=f"slots_rebet_{bet_amount}_{user.id}"), 'primary'),  # BLUE
+            apply_button_style(InlineKeyboardButton("💰 Double", callback_data=f"slots_double_{bet_amount}_{user.id}"), 'success')  # GREEN
+        ]
+    ]
     
     await update.message.reply_text(
-        f"🎰 <b>Slots Result</b> (ID: <code>{game_id}</code>)\n\n💰 Your Bet: ${bet_amount:.2f}\n\n{result_text}",
+        f"🎰 <b>Slots Result</b>\n\n💰 Your Bet: ${bet_amount:.2f}\n\n{result_text}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+@check_banned
+@check_maintenance
+async def slots_rebet_double_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Rebet and Double buttons for slots"""
+    query = update.callback_query
+    user = query.from_user
+    
+    # Parse callback data: slots_rebet_{bet_amount}_{user_id} or slots_double_{bet_amount}_{user_id}
+    parts = query.data.split("_")
+    if len(parts) < 4:
+        await query.answer("Invalid button data", show_alert=True)
+        return
+    
+    action = parts[1]  # rebet or double
+    try:
+        original_bet = float(parts[2])
+        button_user_id = int(parts[3])
+    except (ValueError, IndexError):
+        await query.answer("Invalid button data", show_alert=True)
+        return
+    
+    # User-specific button check
+    if user.id != button_user_id:
+        await query.answer("This button is not for you!", show_alert=True)
+        return
+    
+    await query.answer()
+    await ensure_user_in_wallets(user.id, user.username, context=context, first_name=user.first_name)
+    
+    # Determine bet amount
+    if action == "rebet":
+        bet_amount = original_bet
+    else:  # double
+        bet_amount = original_bet * 2
+    
+    # Check bet limits
+    limits = bot_settings.get('game_limits', {}).get('slots', {})
+    min_bet = limits.get('min', MIN_BALANCE)
+    max_bet = limits.get('max')
+    
+    if bet_amount < min_bet:
+        await query.answer(f"Minimum bet is ${min_bet:.2f}", show_alert=True)
+        return
+    if max_bet is not None and bet_amount > max_bet:
+        await query.answer(f"Maximum bet is ${max_bet:.2f}", show_alert=True)
+        return
+    
+    # Check balance
+    if user_wallets.get(user.id, 0.0) < bet_amount:
+        await query.answer("Insufficient balance!", show_alert=True)
+        return
+    
+    user_wallets[user.id] -= bet_amount
+    save_user_data(user.id)
+
+    # Generate provably fair seeds for slots
+    game_id = generate_unique_id("SL")
+    server_seed = generate_server_seed()
+    client_seed = generate_client_seed()
+    nonce = 1
+
+    await query.edit_message_text(f"🎰 Spinning the slots...")
+    slot_msg, used_helper = await smart_roll(context, query.message.chat.id, "🎰")
+    slot_value = slot_msg.dice.value
+    if used_helper:
+        await asyncio.sleep(HELPER_BOT_ANIMATION_DELAY)
+    else:
+        await asyncio.sleep(3)  # Standard slot animation wait
+
+    win = False
+    multiplier = 0
+    win_type = ""
+    # FIX: Updated slot machine logic with new multipliers
+    if slot_value == 64: # 777
+        win, multiplier, win_type = True, 20, "🍀 JACKPOT - Triple 7s!"
+    elif slot_value in [1, 22, 43]: # bar, grape, lemon
+        win, multiplier, win_type = True, 10, "🎉 Triple Match!"
+
+    if win:
+        winnings = bet_amount * multiplier
+        user_wallets[user.id] += winnings
+        result_text = f"🎉 {win_type}\nYou win ${winnings:.2f}! (Multiplier: {multiplier}x)"
+        update_stats_on_bet(user.id, game_id, bet_amount, True, multiplier=multiplier, context=context)
+    else:
+        result_text = f"😢 No match! You lose ${bet_amount:.2f}\nTry again for the jackpot!"
+        update_stats_on_bet(user.id, game_id, bet_amount, False, context=context)
+
+    game_sessions[game_id] = {
+        "id": game_id, "game_type": "slots", "user_id": user.id,
+        "bet_amount": bet_amount, "status": "completed", "timestamp": str(datetime.now(timezone.utc)),
+        "win": win, "multiplier": multiplier, "result": slot_value,
+        "server_seed": server_seed, "client_seed": client_seed, "nonce": nonce
+    }
+    
+    # Store provably fair record
+    store_provably_fair_record(game_id, "slots", server_seed, client_seed, nonce, 
+                               result_data=f"Slot value: {slot_value}, Multiplier: {multiplier}x")
+    
+    update_pnl(user.id)
+    save_user_data(user.id)
+    
+    # Create keyboard with Rebet and Double buttons
+    keyboard = [
+        [
+            apply_button_style(InlineKeyboardButton("🔄 Rebet", callback_data=f"slots_rebet_{bet_amount}_{user.id}"), 'primary'),  # BLUE
+            apply_button_style(InlineKeyboardButton("💰 Double", callback_data=f"slots_double_{bet_amount}_{user.id}"), 'success')  # GREEN
+        ]
+    ]
+    
+    await query.edit_message_text(
+        f"🎰 <b>Slots Result</b>\n\n💰 Your Bet: ${bet_amount:.2f}\n\n{result_text}",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -16650,6 +16770,9 @@ def main():
     app.add_handler(CallbackQueryHandler(settings_callback_handler, pattern=r"^settings_"))
     app.add_handler(CallbackQueryHandler(active_all_navigation_callback, pattern=r"^activeall_"))
     app.add_handler(CallbackQueryHandler(withdrawal_cancel_callback, pattern=r"^withdrawal_cancel_")) # NEW - Withdrawal cancellation
+    
+    # NEW: Rebet/Double button handlers for games
+    app.add_handler(CallbackQueryHandler(slots_rebet_double_callback, pattern=r"^slots_(rebet|double)_"))
     
     # NEW: Bonus adjustment system handlers
     app.add_handler(CallbackQueryHandler(bonus_adjust_callback, pattern=r"^bonus_adjust_"))
