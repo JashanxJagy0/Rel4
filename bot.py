@@ -10492,8 +10492,8 @@ async def keno_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         selected_str_callback = ",".join(str(n) for n in sorted(selected))
         keyboard = [
             [
-                apply_button_style(InlineKeyboardButton("🔄 Rebet", callback_data=f"keno_rebet_{game['bet_amount']}_{selected_str_callback}_{user.id}"), 'primary'),
-                apply_button_style(InlineKeyboardButton("💰 Double", callback_data=f"keno_double_{game['bet_amount']}_{selected_str_callback}_{user.id}"), 'success')
+                apply_button_style(InlineKeyboardButton("🔄 Rebet", callback_data=f"keno_rebet_{game['bet_amount']}_{selected_str_callback}_{game['user_id']}"), 'primary'),
+                apply_button_style(InlineKeyboardButton("💰 Double", callback_data=f"keno_double_{game['bet_amount']}_{selected_str_callback}_{game['user_id']}"), 'success')
             ],
             [await create_provably_fair_button(game_id, context)]
         ]
@@ -17402,6 +17402,16 @@ def main():
     app.add_handler(CallbackQueryHandler(level_all_command, pattern=r"^levels_")) # NEW - Level pagination
     app.add_handler(CallbackQueryHandler(price_update_callback, pattern=r"^price_update_")) # NEW
     app.add_handler(CallbackQueryHandler(game_info_callback, pattern=r"^game_")); app.add_handler(CallbackQueryHandler(blackjack_callback, pattern=r"^bj_"))
+    
+    # NEW: Rebet/Double button handlers for games (MUST be registered BEFORE general game handlers)
+    app.add_handler(CallbackQueryHandler(slots_rebet_double_callback, pattern=r"^slots_(rebet|double)_"))
+    app.add_handler(CallbackQueryHandler(coinflip_rebet_double_callback, pattern=r"^coinflip_(rebet|double)_"))
+    app.add_handler(CallbackQueryHandler(highlow_rebet_double_callback, pattern=r"^highlow_(rebet|double)_"))
+    app.add_handler(CallbackQueryHandler(keno_rebet_double_callback, pattern=r"^keno_(rebet|double)_"))
+    app.add_handler(CallbackQueryHandler(mines_rebet_double_callback, pattern=r"^mines_(rebet|double)_"))
+    app.add_handler(CallbackQueryHandler(tower_rebet_double_callback, pattern=r"^tower_(rebet|double)_"))
+    
+    # General game callback handlers (after rebet/double to avoid pattern conflicts)
     app.add_handler(CallbackQueryHandler(coin_flip_callback, pattern=r"^flip_")); app.add_handler(CallbackQueryHandler(tower_callback, pattern=r"^tower_"))
     app.add_handler(CallbackQueryHandler(roulette_callback, pattern=r"^roul_"))  # NEW - Roulette interactive menu
     app.add_handler(CallbackQueryHandler(highlow_callback, pattern=r"^hl_"))  # NEW - High-Low game callbacks
@@ -17420,14 +17430,6 @@ def main():
     app.add_handler(CallbackQueryHandler(settings_callback_handler, pattern=r"^settings_"))
     app.add_handler(CallbackQueryHandler(active_all_navigation_callback, pattern=r"^activeall_"))
     app.add_handler(CallbackQueryHandler(withdrawal_cancel_callback, pattern=r"^withdrawal_cancel_")) # NEW - Withdrawal cancellation
-    
-    # NEW: Rebet/Double button handlers for games
-    app.add_handler(CallbackQueryHandler(slots_rebet_double_callback, pattern=r"^slots_(rebet|double)_"))
-    app.add_handler(CallbackQueryHandler(coinflip_rebet_double_callback, pattern=r"^coinflip_(rebet|double)_"))
-    app.add_handler(CallbackQueryHandler(highlow_rebet_double_callback, pattern=r"^highlow_(rebet|double)_"))
-    app.add_handler(CallbackQueryHandler(keno_rebet_double_callback, pattern=r"^keno_(rebet|double)_"))
-    app.add_handler(CallbackQueryHandler(mines_rebet_double_callback, pattern=r"^mines_(rebet|double)_"))
-    app.add_handler(CallbackQueryHandler(tower_rebet_double_callback, pattern=r"^tower_(rebet|double)_"))
     
     # NEW: Bonus adjustment system handlers
     app.add_handler(CallbackQueryHandler(bonus_adjust_callback, pattern=r"^bonus_adjust_"))
