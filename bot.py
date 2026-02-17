@@ -11275,6 +11275,53 @@ async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     await stats_command(update, context, from_callback=True)
 
+# --- LIMITS COMMAND ---
+@check_banned
+@check_maintenance
+async def limits_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Display current game limits for all users"""
+    user = update.effective_user
+    await ensure_user_in_wallets(user.id, user.username, context=context, first_name=user.first_name)
+    
+    # Determine if in group chat
+    is_group = update.effective_chat.type in ["group", "supergroup"]
+    
+    # Get game limits from bot_settings
+    game_limits = bot_settings.get('game_limits', {})
+    
+    if not game_limits:
+        msg = "⚖️ <b>Game Limits</b>\n\n❌ No limits have been set yet."
+    else:
+        msg = "⚖️ <b>Game Limits</b>\n\n"
+        
+        # Group games by category
+        for game_name in sorted(game_limits.keys()):
+            limits = game_limits[game_name]
+            min_bet = limits.get('min', 'Not set')
+            max_bet = limits.get('max', 'Not set')
+            
+            display_name = game_name.replace('_', ' ').title()
+            min_str = f"${min_bet:.2f}" if isinstance(min_bet, (int, float)) else min_bet
+            max_str = f"${max_bet:.2f}" if isinstance(max_bet, (int, float)) else max_bet
+            
+            msg += f"🎮 <b>{display_name}</b>\n"
+            msg += f"   Min: {min_str} | Max: {max_str}\n\n"
+    
+    # Use helper bot in groups if available
+    if is_group and helper_bot:
+        try:
+            await helper_bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=msg,
+                parse_mode=ParseMode.HTML
+            )
+            return
+        except Exception as e:
+            logging.warning(f"Helper bot failed for /limits: {e}")
+    
+    # Otherwise use main bot
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
 # --- USERS (OWNER-ONLY) COMMAND ---
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -14759,7 +14806,8 @@ async def admin_limits_choose_game_step(update: Update, context: ContextTypes.DE
     if query.from_user.id != BOT_OWNER_ID: return ConversationHandler.END
     await query.answer()
 
-    game_name = query.data.split('_')[-1]
+    # Fixed: Extract game name properly (format: admin_limit_game_{game_name})
+    game_name = query.data.replace('admin_limit_game_', '')
     context.user_data['limit_game'] = game_name
     limit_type = context.user_data['limit_type']
 
@@ -16492,6 +16540,7 @@ def main():
     app.add_handler(CommandHandler(["roul", "roulette"], roulette_command)); app.add_handler(CommandHandler("dr", dice_roll_command))
     app.add_handler(CommandHandler("sl", slots_command)); app.add_handler(CommandHandler("bank", bank_command)); app.add_handler(CommandHandler("hb", bank_command)) # hb is alias for bank
     app.add_handler(CommandHandler("rain", rain_command)); app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("limits", limits_command)) # NEW - Game limits display
     app.add_handler(CommandHandler("users", users_command)); app.add_handler(CommandHandler("dice", dice_command))
     app.add_handler(CommandHandler("darts", darts_command)); app.add_handler(CommandHandler("goal", football_command))
     app.add_handler(CommandHandler("bowl", bowling_command))
