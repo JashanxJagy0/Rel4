@@ -3643,6 +3643,20 @@ def generate_tower_positions(server_seed, client_seed, nonce, difficulty, num_fl
         positions.append(snake_pos)
     return positions
 
+def generate_keno_numbers(server_seed, client_seed, nonce, count=10):
+    """Generate deterministic keno numbers for Keno game - provably fair"""
+    numbers = []
+    offset = 0
+    # Use nonce * 1000 to ensure consecutive games don't produce overlapping hash inputs
+    base_nonce = nonce * 1000
+    while len(numbers) < count:
+        # Generate numbers 1-40
+        num = get_provably_fair_result(server_seed, client_seed, base_nonce + offset, 40) + 1
+        if num not in numbers:
+            numbers.append(num)
+        offset += 1
+    return sorted(numbers)
+
 def get_limbo_multiplier(server_seed, client_seed, nonce):
     """
     Generate a provably fair Limbo multiplier using inverse exponential distribution.
@@ -10395,16 +10409,13 @@ async def keno_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_wallets[game["user_id"]] -= game["bet_amount"]
         save_user_data(game["user_id"])
         
-        # Use pure cryptographically secure randomness for keno
-        # secrets.SystemRandom() uses OS entropy source for true unpredictability
-        secure_random = secrets.SystemRandom()
-        drawn_numbers = sorted(secure_random.sample(range(1, 41), 10))
-        
-        # Still store seeds for reference (but drawn numbers are random)
-        game_client_seed = generate_game_client_seed()
+        # Use provably fair generation for keno (deterministic)
         seeds = get_user_seeds(game["user_id"])
         current_nonce = seeds["nonce"]
         increment_user_nonce(game["user_id"])
+        
+        # Generate keno numbers using provably fair method
+        drawn_numbers = generate_keno_numbers(seeds["server_seed"], seeds["client_seed"], current_nonce, 10)
         
         # Calculate matches
         matches = len(set(selected) & set(drawn_numbers))
@@ -10429,7 +10440,7 @@ async def keno_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         game["matches"] = matches
         game["multiplier"] = multiplier
         game["server_seed"] = seeds["server_seed"]
-        game["client_seed"] = game_client_seed  # Store game-specific client seed
+        game["client_seed"] = seeds["client_seed"]  # Store user's client seed
         game["nonce"] = current_nonce
         game["win"] = win
         
@@ -10546,15 +10557,13 @@ async def keno_rebet_double_callback(update: Update, context: ContextTypes.DEFAU
     
     game_id = generate_unique_id("KN")
     
-    # Use pure cryptographically secure randomness for keno
-    secure_random = secrets.SystemRandom()
-    drawn_numbers = sorted(secure_random.sample(range(1, 41), 10))
-    
-    # Still store seeds for reference
-    game_client_seed = generate_game_client_seed()
+    # Use provably fair generation for keno (deterministic)
     seeds = get_user_seeds(user.id)
     current_nonce = seeds["nonce"]
     increment_user_nonce(user.id)
+    
+    # Generate keno numbers using provably fair method
+    drawn_numbers = generate_keno_numbers(seeds["server_seed"], seeds["client_seed"], current_nonce, 10)
     
     # Calculate matches
     matches = len(set(selected_numbers) & set(drawn_numbers))
@@ -10586,7 +10595,7 @@ async def keno_rebet_double_callback(update: Update, context: ContextTypes.DEFAU
         "status": "completed",
         "timestamp": str(datetime.now(timezone.utc)),
         "server_seed": seeds["server_seed"],
-        "client_seed": game_client_seed,
+        "client_seed": seeds["client_seed"],  # Store user's client seed
         "nonce": current_nonce,
         "win": win
     }
@@ -10631,7 +10640,7 @@ async def keno_rebet_double_callback(update: Update, context: ContextTypes.DEFAU
     result_text += f"\n<b>Game ID:</b> <code>{game_id}</code>"
     
     # Store provably fair record
-    store_provably_fair_record(game_id, "keno", seeds["server_seed"], game_client_seed, current_nonce, 
+    store_provably_fair_record(game_id, "keno", seeds["server_seed"], seeds["client_seed"], current_nonce, 
                                result_data=f"Matches: {matches}/{num_picks}, Drawn: {drawn_numbers}")
     
     # Add rebet/double and provably fair buttons
@@ -13981,11 +13990,25 @@ for i in range(min(10, len(deck))):
 """
     
     elif game_type == "mines":
-        game_code = """# Mines Game Verification
+        # Extract mine count from result data if available
+        result_data = pf_record.get('result_data', '')
+        num_mines = 3  # Default
+        # Try to extract from result_data
+        import re
+        if result_data:
+            match = re.search(r'Mine positions: \[([^\]]+)\]', result_data)
+            if match:
+                try:
+                    positions_str = match.group(1)
+                    num_mines = len(positions_str.split(','))
+                except:
+                    pass
+        
+        game_code = f"""# Mines Game Verification
 def generate_mine_positions(server_seed, client_seed, nonce, num_mines):
     positions = []
     offset = 0
-    # Use nonce * 1000 to ensure unique results for consecutive games
+    # IMPORTANT: Use nonce * 1000 to ensure unique results for consecutive games
     base_nonce = nonce * 1000
     while len(positions) < num_mines:
         pos = get_provably_fair_result(server_seed, client_seed, base_nonce + offset, 25)
@@ -13994,40 +14017,53 @@ def generate_mine_positions(server_seed, client_seed, nonce, num_mines):
         offset += 1
     return sorted(positions)
 
-# Extract mine count from result_data or use default
-num_mines = 3  # Default, adjust based on your game
+# Mine count from your game
+num_mines = {num_mines}
 
 mine_positions = generate_mine_positions(server_seed, client_seed, nonce, num_mines)
 
 print("=== Mines Verification ===")
-print(f"Mine Positions: {mine_positions}")
-print("\\nGrid (5x5):")
+print(f"Mine Positions (0-24): {{mine_positions}}")
+print(f"Number of mines: {{len(mine_positions)}}")
+print("\\nGrid (5x5, rows 0-4, cols 0-4):")
 for row in range(5):
     row_str = ""
     for col in range(5):
         idx = row * 5 + col
         row_str += "💣 " if idx in mine_positions else "💎 "
-    print(f"Row {row+1}: {row_str}")
+    print(f"Row {{row}}: {{row_str}}")
 """
     
     elif game_type == "tower":
-        game_code = """# Tower Game Verification  
-def generate_tower_positions(server_seed, client_seed, nonce, difficulty):
+        # Extract difficulty from result data if available
+        result_data = pf_record.get('result_data', '')
+        difficulty = 'medium'  # Default
+        if 'easy' in result_data.lower():
+            difficulty = 'easy'
+        elif 'hard' in result_data.lower():
+            difficulty = 'hard'
+        elif 'medium' in result_data.lower():
+            difficulty = 'medium'
+        
+        game_code = f"""# Tower Game Verification  
+def generate_tower_positions(server_seed, client_seed, nonce, difficulty, num_floors=9):
     tiles_per_floor = {{'easy': 4, 'medium': 3, 'hard': 2}}.get(difficulty, 3)
     positions = []
-    # Use nonce * 1000 to ensure unique results for consecutive games
+    # IMPORTANT: Use nonce * 1000 to ensure unique results for consecutive games
     base_nonce = nonce * 1000
-    for floor in range(9):
+    for floor in range(num_floors):
         snake_pos = get_provably_fair_result(server_seed, client_seed, base_nonce + floor, tiles_per_floor)
         positions.append(snake_pos)
     return positions
 
-difficulty = 'medium'  # Change to 'easy', 'medium', or 'hard' based on your game
-snake_positions = generate_tower_positions(server_seed, client_seed, nonce, difficulty)
+# Difficulty from your game
+difficulty = '{difficulty}'
+snake_positions = generate_tower_positions(server_seed, client_seed, nonce, difficulty, 9)
 tiles = {{'easy': 4, 'medium': 3, 'hard': 2}}[difficulty]
 
 print(f"=== Tower Verification ({{difficulty.title()}}) ===")
-print("Snake positions by floor (0-indexed):")
+print(f"Tiles per floor: {{tiles}}")
+print("Snake positions by floor (position 0 to {{tiles-1}}):")
 for i, pos in enumerate(snake_positions):
     floor_num = i + 1
     grid = ['🌴' for _ in range(tiles)]
@@ -14071,7 +14107,7 @@ print(f"Hash: {{create_hash(server_seed, client_seed, nonce)[:16]}}...")
 def generate_keno_numbers(server_seed, client_seed, nonce, count=10):
     numbers = []
     offset = 0
-    # Use nonce * 1000 to ensure unique results for consecutive games
+    # IMPORTANT: Use nonce * 1000 to ensure unique results for consecutive games
     base_nonce = nonce * 1000
     while len(numbers) < count:
         num = get_provably_fair_result(server_seed, client_seed, base_nonce + offset, 40) + 1
@@ -14083,7 +14119,8 @@ def generate_keno_numbers(server_seed, client_seed, nonce, count=10):
 keno_numbers = generate_keno_numbers(server_seed, client_seed, nonce, 10)
 
 print("=== Keno Verification ===")
-print(f"Drawn Numbers: {{keno_numbers}}")
+print(f"Drawn Numbers (1-40): {{keno_numbers}}")
+print(f"Total drawn: {{len(keno_numbers)}}")
 """
     
     else:
