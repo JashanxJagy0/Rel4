@@ -3249,19 +3249,19 @@ async def safe_edit_message(query, text, reply_markup=None, parse_mode=None, dis
 # Roulette configuration
 ROULETTE_CONFIG = {
     "single_number": {"multiplier": 35, "count": 1},
-    "red": {"multiplier": 2, "numbers": [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]},
-    "black": {"multiplier": 2, "numbers": [2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35]},
-    "even": {"multiplier": 2, "numbers": [2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36]},
-    "odd": {"multiplier": 2, "numbers": [1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33,35]},
-    "low": {"multiplier": 2, "numbers": list(range(1, 19))},
-    "high": {"multiplier": 2, "numbers": list(range(19, 37))},
-    "column1": {"multiplier": 3, "numbers": [1,4,7,10,13,16,19,22,25,28,31,34]},
-    "column2": {"multiplier": 3, "numbers": [2,5,8,11,14,17,20,23,26,29,32,35]},
-    "column3": {"multiplier": 3, "numbers": [3,6,9,12,15,18,21,24,27,30,33,36]},
+    "red": {"multiplier": 1.96, "numbers": [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]},
+    "black": {"multiplier": 1.96, "numbers": [2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35]},
+    "even": {"multiplier": 1.96, "numbers": [2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36]},
+    "odd": {"multiplier": 1.96, "numbers": [1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33,35]},
+    "low": {"multiplier": 1.96, "numbers": list(range(1, 19))},
+    "high": {"multiplier": 1.96, "numbers": list(range(19, 37))},
+    "column1": {"multiplier": 2.92, "numbers": [1,4,7,10,13,16,19,22,25,28,31,34]},
+    "column2": {"multiplier": 2.92, "numbers": [2,5,8,11,14,17,20,23,26,29,32,35]},
+    "column3": {"multiplier": 2.92, "numbers": [3,6,9,12,15,18,21,24,27,30,33,36]},
     # Dozen bets (1-12, 13-24, 25-36) - different from column bets!
-    "dozen1": {"multiplier": 3, "numbers": list(range(1, 13))},   # 1-12
-    "dozen2": {"multiplier": 3, "numbers": list(range(13, 25))},  # 13-24
-    "dozen3": {"multiplier": 3, "numbers": list(range(25, 37))},  # 25-36
+    "dozen1": {"multiplier": 2.92, "numbers": list(range(1, 13))},   # 1-12
+    "dozen2": {"multiplier": 2.92, "numbers": list(range(13, 25))},  # 13-24
+    "dozen3": {"multiplier": 2.92, "numbers": list(range(25, 37))},  # 25-36
 }
 
 # Tower game multiplier chart (4 columns, varying bombs per row)
@@ -5609,8 +5609,8 @@ async def game_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "• <code>/roul 1 high</code> (19-36)\n\n"
             "<b>Payouts:</b>\n"
             "• Single number: 35x\n"
-            "• Red/Black, Even/Odd, High/Low: 2x\n"
-            "• Columns: 3x",
+            "• Red/Black, Even/Odd, High/Low: 1.96x\n"
+            "• Columns: 2.92x",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="games_category_house")]])
         )
