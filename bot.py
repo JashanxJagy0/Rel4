@@ -8787,12 +8787,13 @@ async def slots_rebet_double_callback(update: Update, context: ContextTypes.DEFA
     update_pnl(user.id)
     save_user_data(user.id)
     
-    # Create keyboard with Rebet and Double buttons
+    # Create keyboard with Rebet, Double, and Provably Fair buttons
     keyboard = [
         [
             apply_button_style(InlineKeyboardButton("🔄 Rebet", callback_data=f"slots_rebet_{bet_amount}_{user.id}"), 'primary'),  # BLUE
             apply_button_style(InlineKeyboardButton("💰 Double", callback_data=f"slots_double_{bet_amount}_{user.id}"), 'success')  # GREEN
         ]
+        # NOTE: Slots is emoji-based, no provably fair verification (removed as per previous design decision)
     ]
     
     await query.edit_message_text(
