@@ -6338,8 +6338,14 @@ async def coin_flip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             store_provably_fair_record(game_id, "coinflip", game["server_seed"], game["client_seed"], game["nonce"], 
                                        result_data=f"Streak: {game['streak']}, Result: {bot_choice}")
             
-            # Add provably fair button
-            keyboard = [[await create_provably_fair_button(game_id, context)]]
+            # Add rebet/double and provably fair buttons
+            keyboard = [
+                [
+                    apply_button_style(InlineKeyboardButton("🔄 Rebet", callback_data=f"coinflip_rebet_{game['bet_amount']}_{user.id}"), 'primary'),
+                    apply_button_style(InlineKeyboardButton("💰 Double", callback_data=f"coinflip_double_{game['bet_amount']}_{user.id}"), 'success')
+                ],
+                [await create_provably_fair_button(game_id, context)]
+            ]
             
             await query.edit_message_text(
                 f"❌ <b>Wrong!</b> You picked {pick}, but the coin landed on {bot_choice}.\n\n"
@@ -6367,8 +6373,14 @@ async def coin_flip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         store_provably_fair_record(game_id, "coinflip", game["server_seed"], game["client_seed"], game["nonce"], 
                                    result_data=f"Streak: {game['streak']}, Multiplier: {multiplier:.2f}x")
         
-        # Add provably fair button
-        keyboard = [[await create_provably_fair_button(game_id, context)]]
+        # Add rebet/double and provably fair buttons
+        keyboard = [
+            [
+                apply_button_style(InlineKeyboardButton("🔄 Rebet", callback_data=f"coinflip_rebet_{game['bet_amount']}_{user.id}"), 'primary'),
+                apply_button_style(InlineKeyboardButton("💰 Double", callback_data=f"coinflip_double_{game['bet_amount']}_{user.id}"), 'success')
+            ],
+            [await create_provably_fair_button(game_id, context)]
+        ]
         
         await query.edit_message_text(
             f"💸 <b>Cashed Out!</b>\n\n🎉 You won <b>${win_amount:.2f}</b>!\n"
@@ -6377,6 +6389,88 @@ async def coin_flip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         # del game_sessions[game_id] # FIX: Don't delete history
+
+@check_banned
+@check_maintenance
+async def coinflip_rebet_double_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Rebet and Double buttons for coinflip"""
+    query = update.callback_query
+    user = query.from_user
+    
+    # Parse callback data: coinflip_rebet_{bet_amount}_{user_id} or coinflip_double_{bet_amount}_{user_id}
+    parts = query.data.split("_")
+    if len(parts) < 4:
+        await query.answer("Invalid button data", show_alert=True)
+        return
+    
+    action = parts[1]  # rebet or double
+    try:
+        original_bet = float(parts[2])
+        button_user_id = int(parts[3])
+    except (ValueError, IndexError):
+        await query.answer("Invalid button data", show_alert=True)
+        return
+    
+    # User-specific button check
+    if user.id != button_user_id:
+        await query.answer("This button is not for you!", show_alert=True)
+        return
+    
+    await query.answer()
+    await ensure_user_in_wallets(user.id, user.username, context=context, first_name=user.first_name)
+    
+    # Determine bet amount
+    if action == "rebet":
+        bet = original_bet
+    else:  # double
+        bet = original_bet * 2
+    
+    # Check bet limits
+    if not await check_bet_limits(update, bet, 'coin_flip', user_id=user.id):
+        await query.answer("Bet exceeds limits", show_alert=True)
+        return
+    
+    # Check balance
+    if user_wallets.get(user.id, 0.0) < bet:
+        await query.answer("Insufficient balance!", show_alert=True)
+        return
+    
+    user_wallets[user.id] -= bet
+    save_user_data(user.id)
+
+    # Use user's provably fair seeds and increment nonce at game start
+    seeds = get_user_seeds(user.id)
+    current_nonce = seeds["nonce"]
+    increment_user_nonce(user.id)
+    game_id = generate_unique_id("CF")
+
+    game_sessions[game_id] = {
+        "id": game_id,
+        "game_type": "coin_flip",
+        "user_id": user.id,
+        "bet_amount": bet,
+        "status": "active",
+        "timestamp": str(datetime.now(timezone.utc)),
+        "streak": 0,
+        "server_seed": seeds["server_seed"],
+        "client_seed": seeds["client_seed"],
+        "nonce": current_nonce
+    }
+    await ensure_user_in_wallets(user.id, user.username, context=context)
+    if 'game_sessions' not in user_stats[user.id]: user_stats[user.id]['game_sessions'] = []
+    user_stats[user.id]['game_sessions'].append(game_id)
+    save_user_data(user.id)
+
+    keyboard = [
+        [InlineKeyboardButton("🪙 Heads", callback_data=f"flip_pick_{game_id}_Heads"),
+         InlineKeyboardButton("🪙 Tails", callback_data=f"flip_pick_{game_id}_Tails")]
+    ]
+    await query.edit_message_text(
+        f"🪙 <b>Coin Flip Started!</b> (ID: <code>{game_id}</code>)\n\n💰 Bet: ${bet:.2f}\nChoose Heads or Tails!\n\n"
+        f"🎯 Current Multiplier: 1.94x",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 # 2B. HIGH-LOW CARD GAME
 # High-Low multiplier table based on probability
@@ -6732,8 +6826,14 @@ async def highlow_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 store_provably_fair_record(game_id, "hilo", game["server_seed"], game["client_seed"], game["nonce"], 
                                            result_data=f"Streak: {game['streak']}, Next card: {next_card}")
                 
-                # Add provably fair button
-                keyboard = [[await create_provably_fair_button(game_id, context)]]
+                # Add rebet/double and provably fair buttons
+                keyboard = [
+                    [
+                        apply_button_style(InlineKeyboardButton("🔄 Rebet", callback_data=f"highlow_rebet_{game['bet_amount']}_{user.id}"), 'primary'),
+                        apply_button_style(InlineKeyboardButton("💰 Double", callback_data=f"highlow_double_{game['bet_amount']}_{user.id}"), 'success')
+                    ],
+                    [await create_provably_fair_button(game_id, context)]
+                ]
                 
                 next_card_name = get_card_name(next_card)
                 await query.edit_message_text(
@@ -6760,8 +6860,14 @@ async def highlow_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         store_provably_fair_record(game_id, "hilo", game["server_seed"], game["client_seed"], game["nonce"], 
                                    result_data=f"Streak: {game['streak']}, Multiplier: {game['current_multiplier']:.2f}x")
         
-        # Add provably fair button
-        keyboard = [[await create_provably_fair_button(game_id, context)]]
+        # Add rebet/double and provably fair buttons
+        keyboard = [
+            [
+                apply_button_style(InlineKeyboardButton("🔄 Rebet", callback_data=f"highlow_rebet_{game['bet_amount']}_{user.id}"), 'primary'),
+                apply_button_style(InlineKeyboardButton("💰 Double", callback_data=f"highlow_double_{game['bet_amount']}_{user.id}"), 'success')
+            ],
+            [await create_provably_fair_button(game_id, context)]
+        ]
         
         await query.edit_message_text(
             f"💸 <b>Cashed Out!</b>\n\n"
@@ -6772,6 +6878,127 @@ async def highlow_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+
+@check_banned
+@check_maintenance
+async def highlow_rebet_double_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Rebet and Double buttons for highlow"""
+    query = update.callback_query
+    user = query.from_user
+    
+    # Parse callback data: highlow_rebet_{bet_amount}_{user_id} or highlow_double_{bet_amount}_{user_id}
+    parts = query.data.split("_")
+    if len(parts) < 4:
+        await query.answer("Invalid button data", show_alert=True)
+        return
+    
+    action = parts[1]  # rebet or double
+    try:
+        original_bet = float(parts[2])
+        button_user_id = int(parts[3])
+    except (ValueError, IndexError):
+        await query.answer("Invalid button data", show_alert=True)
+        return
+    
+    # User-specific button check
+    if user.id != button_user_id:
+        await query.answer("This button is not for you!", show_alert=True)
+        return
+    
+    await query.answer()
+    await ensure_user_in_wallets(user.id, user.username, context=context, first_name=user.first_name)
+    
+    # Determine bet amount
+    if action == "rebet":
+        bet = original_bet
+    else:  # double
+        bet = original_bet * 2
+    
+    # Check bet limits
+    if not await check_bet_limits(update, bet, 'highlow', user_id=user.id):
+        await query.answer("Bet exceeds limits", show_alert=True)
+        return
+    
+    # Check balance
+    if user_wallets.get(user.id, 0.0) < bet:
+        await query.answer("Insufficient balance!", show_alert=True)
+        return
+    
+    user_wallets[user.id] -= bet
+    save_user_data(user.id)
+
+    # Use user's provably fair seeds
+    seeds = get_user_seeds(user.id)
+    game_id = generate_unique_id("HL")
+    
+    # Generate deck of cards deterministically
+    deck = list(range(1, 14)) * 4  # 4 suits
+    # Shuffle deck using provably fair method
+    for i in range(len(deck) - 1, 0, -1):
+        j = get_provably_fair_result(seeds["server_seed"], seeds["client_seed"], seeds["nonce"] + i, i + 1)
+        deck[i], deck[j] = deck[j], deck[i]
+    
+    current_card = deck.pop()
+    
+    game_sessions[game_id] = {
+        "id": game_id,
+        "game_type": "highlow",
+        "user_id": user.id,
+        "bet_amount": bet,
+        "status": "active",
+        "timestamp": str(datetime.now(timezone.utc)),
+        "streak": 0,
+        "server_seed": seeds["server_seed"],
+        "client_seed": seeds["client_seed"],
+        "nonce": seeds["nonce"],
+        "deck": deck,
+        "current_card": current_card,
+        "current_multiplier": 1.0
+    }
+    
+    await ensure_user_in_wallets(user.id, user.username, context=context)
+    if 'game_sessions' not in user_stats[user.id]:
+        user_stats[user.id]['game_sessions'] = []
+    user_stats[user.id]['game_sessions'].append(game_id)
+    save_user_data(user.id)
+    
+    card_name = get_card_name(current_card)
+    
+    # Calculate multipliers for each choice
+    high_mult = calculate_highlow_multiplier(current_card, deck, "high")
+    low_mult = calculate_highlow_multiplier(current_card, deck, "low")
+    tie_mult = calculate_highlow_multiplier(current_card, deck, "tie")
+    
+    # Build keyboard
+    buttons = []
+    if current_card != 13:
+        buttons.append(InlineKeyboardButton(f"⬆️ Higher ({high_mult:.2f}x)", callback_data=f"hl_pick_{game_id}_high"))
+    if current_card != 1:
+        buttons.append(InlineKeyboardButton(f"⬇️ Lower ({low_mult:.2f}x)", callback_data=f"hl_pick_{game_id}_low"))
+    buttons.append(InlineKeyboardButton(f"🔄 Tie ({tie_mult:.2f}x)", callback_data=f"hl_pick_{game_id}_tie"))
+    
+    keyboard = [
+        buttons,
+        [InlineKeyboardButton("⏭️ Skip Card", callback_data=f"hl_skip_{game_id}")]
+    ]
+    
+    # Build multiplier text
+    mult_text = "Choose your prediction:\n"
+    if current_card != 13:
+        mult_text += f"⬆️ Higher: {high_mult:.2f}x\n"
+    if current_card != 1:
+        mult_text += f"⬇️ Lower: {low_mult:.2f}x\n"
+    mult_text += f"🔄 Tie: {tie_mult:.2f}x"
+    
+    await query.edit_message_text(
+        f"🎴 <b>High-Low Game Started!</b> (ID: <code>{game_id}</code>)\n\n"
+        f"💰 Bet: ${bet:.2f}\n"
+        f"🃏 Current Card: <b>{card_name}</b>\n"
+        f"📊 Cards remaining: {len(deck)}\n\n"
+        f"{mult_text}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 # 3. ROULETTE GAME
 # NEW: Roulette helper functions for interactive menu system
@@ -10136,14 +10363,175 @@ async def keno_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         store_provably_fair_record(game_id, "keno", game["server_seed"], game["client_seed"], game["nonce"], 
                                    result_data=f"Matches: {matches}/{num_picks}, Drawn: {drawn_numbers}")
         
-        # Add provably fair button
-        keyboard = [[await create_provably_fair_button(game_id, context)]]
+        # Add rebet/double and provably fair buttons
+        # Store selected numbers as a string for callback
+        selected_str_callback = ",".join(str(n) for n in sorted(selected))
+        keyboard = [
+            [
+                apply_button_style(InlineKeyboardButton("🔄 Rebet", callback_data=f"keno_rebet_{game['bet_amount']}_{selected_str_callback}_{user.id}"), 'primary'),
+                apply_button_style(InlineKeyboardButton("💰 Double", callback_data=f"keno_double_{game['bet_amount']}_{selected_str_callback}_{user.id}"), 'success')
+            ],
+            [await create_provably_fair_button(game_id, context)]
+        ]
         
         await query.edit_message_text(result_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
     
     elif action == "cancel":
         game["status"] = "cancelled"
         await query.edit_message_text("❌ Keno game cancelled.", parse_mode=ParseMode.HTML)
+
+@check_banned
+@check_maintenance
+async def keno_rebet_double_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Rebet and Double buttons for keno"""
+    query = update.callback_query
+    user = query.from_user
+    
+    # Parse callback data: keno_rebet_{bet_amount}_{selected_numbers}_{user_id}
+    parts = query.data.split("_")
+    if len(parts) < 5:
+        await query.answer("Invalid button data", show_alert=True)
+        return
+    
+    action = parts[1]  # rebet or double
+    try:
+        original_bet = float(parts[2])
+        selected_str = parts[3]  # comma-separated numbers
+        button_user_id = int(parts[4])
+        selected_numbers = [int(n) for n in selected_str.split(",") if n]
+    except (ValueError, IndexError):
+        await query.answer("Invalid button data", show_alert=True)
+        return
+    
+    # User-specific button check
+    if user.id != button_user_id:
+        await query.answer("This button is not for you!", show_alert=True)
+        return
+    
+    await query.answer()
+    await ensure_user_in_wallets(user.id, user.username, context=context, first_name=user.first_name)
+    
+    # Determine bet amount
+    if action == "rebet":
+        bet_amount = original_bet
+    else:  # double
+        bet_amount = original_bet * 2
+    
+    # Check bet limits
+    if not await check_bet_limits(update, bet_amount, 'keno', user_id=user.id):
+        await query.answer("Bet exceeds limits", show_alert=True)
+        return
+    
+    # Check balance
+    if user_wallets.get(user.id, 0.0) < bet_amount:
+        await query.answer("Insufficient balance!", show_alert=True)
+        return
+    
+    # Deduct bet
+    user_wallets[user.id] -= bet_amount
+    save_user_data(user.id)
+    
+    game_id = generate_unique_id("KN")
+    
+    # Use pure cryptographically secure randomness for keno
+    secure_random = secrets.SystemRandom()
+    drawn_numbers = sorted(secure_random.sample(range(1, 41), 10))
+    
+    # Still store seeds for reference
+    game_client_seed = generate_game_client_seed()
+    seeds = get_user_seeds(user.id)
+    current_nonce = seeds["nonce"]
+    increment_user_nonce(user.id)
+    
+    # Calculate matches
+    matches = len(set(selected_numbers) & set(drawn_numbers))
+    num_picks = len(selected_numbers)
+    
+    # Get multiplier
+    multiplier = KENO_PAYOUTS.get(num_picks, {}).get(matches, 0.0)
+    
+    if multiplier > 0:
+        winnings = bet_amount * multiplier
+        user_wallets[user.id] += winnings
+        profit = winnings - bet_amount
+        win = True
+    else:
+        winnings = 0
+        profit = -bet_amount
+        win = False
+    
+    # Store game session
+    game_sessions[game_id] = {
+        "id": game_id,
+        "game_type": "keno",
+        "user_id": user.id,
+        "bet_amount": bet_amount,
+        "selected_numbers": selected_numbers,
+        "drawn_numbers": drawn_numbers,
+        "matches": matches,
+        "multiplier": multiplier,
+        "status": "completed",
+        "timestamp": str(datetime.now(timezone.utc)),
+        "server_seed": seeds["server_seed"],
+        "client_seed": game_client_seed,
+        "nonce": current_nonce,
+        "win": win
+    }
+    
+    # Update stats
+    update_stats_on_bet(user.id, game_id, bet_amount, win, multiplier=multiplier, context=context)
+    update_pnl(user.id)
+    save_user_data(user.id)
+    
+    # Format result
+    selected_str_display = ", ".join(str(n) for n in sorted(selected_numbers))
+    drawn_str = ", ".join(str(n) for n in sorted(drawn_numbers))
+    matched_str = ", ".join(str(n) for n in sorted(set(selected_numbers) & set(drawn_numbers)))
+    
+    result_text = (
+        f"🎯 <b>KENO RESULT</b>\n"
+        f"────────────────\n\n"
+        f"📌 <b>Your Numbers:</b> {selected_str_display}\n"
+        f"🎲 <b>Drawn Numbers:</b> {drawn_str}\n"
+        f"✅ <b>Matches:</b> {matches}/{num_picks}\n"
+    )
+    
+    if matched_str:
+        result_text += f"🎊 <b>Matched:</b> {matched_str}\n"
+    
+    result_text += "\n"
+    
+    if win:
+        result_text += (
+            f"🎉 <b>YOU WIN!</b>\n"
+            f"💰 Multiplier: {multiplier}x\n"
+            f"💵 Profit: ${profit:.2f}\n"
+            f"💸 Total Payout: ${winnings:.2f}\n"
+        )
+    else:
+        result_text += (
+            f"❌ <b>NO WIN</b>\n"
+            f"💸 Lost: ${bet_amount:.2f}\n"
+            f"Better luck next time!"
+        )
+    
+    result_text += f"\n<b>Game ID:</b> <code>{game_id}</code>"
+    
+    # Store provably fair record
+    store_provably_fair_record(game_id, "keno", seeds["server_seed"], game_client_seed, current_nonce, 
+                               result_data=f"Matches: {matches}/{num_picks}, Drawn: {drawn_numbers}")
+    
+    # Add rebet/double and provably fair buttons
+    selected_str_callback = ",".join(str(n) for n in sorted(selected_numbers))
+    keyboard = [
+        [
+            apply_button_style(InlineKeyboardButton("🔄 Rebet", callback_data=f"keno_rebet_{bet_amount}_{selected_str_callback}_{user.id}"), 'primary'),
+            apply_button_style(InlineKeyboardButton("💰 Double", callback_data=f"keno_double_{bet_amount}_{selected_str_callback}_{user.id}"), 'success')
+        ],
+        [await create_provably_fair_button(game_id, context)]
+    ]
+    
+    await query.edit_message_text(result_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
 
 ## NEW GAMES - Crash, Plinko, Wheel, Scratch Card, Coin Chain ##
 
@@ -16773,6 +17161,9 @@ def main():
     
     # NEW: Rebet/Double button handlers for games
     app.add_handler(CallbackQueryHandler(slots_rebet_double_callback, pattern=r"^slots_(rebet|double)_"))
+    app.add_handler(CallbackQueryHandler(coinflip_rebet_double_callback, pattern=r"^coinflip_(rebet|double)_"))
+    app.add_handler(CallbackQueryHandler(highlow_rebet_double_callback, pattern=r"^highlow_(rebet|double)_"))
+    app.add_handler(CallbackQueryHandler(keno_rebet_double_callback, pattern=r"^keno_(rebet|double)_"))
     
     # NEW: Bonus adjustment system handlers
     app.add_handler(CallbackQueryHandler(bonus_adjust_callback, pattern=r"^bonus_adjust_"))
